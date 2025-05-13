@@ -2,6 +2,7 @@ package com.handson.searchengine.crawler;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.handson.searchengine.kafka.Producer;
 import com.handson.searchengine.model.*;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -31,27 +32,27 @@ public class Crawler {
 
     protected final Log logger = LogFactory.getLog(getClass());
 
-    public static final int MAX_CAPACITY = 100000;
+//    public static final int MAX_CAPACITY = 100000;
+//
+//    private BlockingQueue<CrawlerRecord> queue = new ArrayBlockingQueue<CrawlerRecord>(MAX_CAPACITY);
 
-    private BlockingQueue<CrawlerRecord> queue = new ArrayBlockingQueue<CrawlerRecord>(MAX_CAPACITY);
+    @Autowired
+    Producer producer;
 
     public void crawl(String crawlId, CrawlerRequest crawlerRequest) throws InterruptedException, IOException {
         initCrawlInRedis(crawlId);
-        queue.clear();
+        producer.send(CrawlerRecord.of(crawlId, crawlerRequest));
+    }
 
-        queue.put(CrawlerRecord.of(crawlId, crawlerRequest));
-        while (!queue.isEmpty() && getStopReason(queue.peek()) == null) {
-            CrawlerRecord rec = queue.poll();
-            logger.info("crawling url:" + rec.getUrl());
-            setCrawlStatus(crawlId, CrawlStatus.of(rec.getDistance(), rec.getStartTime(), 0, null));
+    public void crawlOneRecord(CrawlerRecord rec) throws IOException, InterruptedException {
+        logger.info("crawling url:" + rec.getUrl());
+        StopReason stopReason = getStopReason(rec);
+        setCrawlStatus(rec.getCrawlId(),CrawlStatus.of(rec.getDistance(), rec.getStartTime(), 0, stopReason));
+        if (stopReason == null) {
             Document webPageContent = Jsoup.connect(rec.getUrl()).get();
             List<String> innerUrls = extractWebPageUrls(rec.getBaseUrl(), webPageContent);
             addUrlsToQueue(rec, innerUrls, rec.getDistance() +1);
         }
-
-        CrawlerRecord rec = queue.peek();
-        var stopReason = getStopReason(rec);
-        setCrawlStatus(crawlId, CrawlStatus.of(rec.getDistance(), rec.getStartTime(), 0, stopReason));
     }
 
     private StopReason getStopReason(CrawlerRecord rec) {
@@ -62,11 +63,11 @@ public class Crawler {
     }
 
 
-    private void addUrlsToQueue(CrawlerRecord rec, List<String> urls, int distance) throws InterruptedException {
+    private void addUrlsToQueue(CrawlerRecord rec, List<String> urls, int distance) throws InterruptedException, JsonProcessingException {
         logger.info(">> adding urls to queue: distance->" + distance + " amount->" + urls.size());
         for (String url : urls) {
             if (!crawlHasVisited(rec, url)) {
-                queue.put(CrawlerRecord.of(rec).withUrl(url).withIncDistance()) ;
+                producer.send(CrawlerRecord.of(rec).withUrl(url).withIncDistance()) ;
             }
         }
     }
